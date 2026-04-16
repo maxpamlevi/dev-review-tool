@@ -5,6 +5,7 @@
   "description": "AI-powered Git diff code review for VS Code",
   "icon": "media/logo_ai.png",
   "version": "0.0.1",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/maxpamlevi/smart-review-extension.git"
