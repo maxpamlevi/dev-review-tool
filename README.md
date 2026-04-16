@@ -1,10 +1,15 @@
-# SRV — AI Code Review for VS Code
+
+<div align="center">
+  <img src="media/logo_ai.png" alt="SRV AI Code Review" width="140" />
+</div>
+
+# 🚀 SRV — AI Code Review for VS Code
 
 SRV is a lightweight AI-powered code review extension for Visual Studio Code. It analyzes Git diffs, generates actionable review comments, shows them inline and in a sidebar, and lets you apply or remove comments with a single click.
 
 The extension is designed to fit naturally into your Git workflow without interrupting your editor experience.
 
-## Highlights
+## ✨ Highlights
 
 - **AI review for changed files** using your configured Azure OpenAI endpoint.
 - **Inline review comments** rendered directly on the diff editor.
@@ -52,7 +57,7 @@ Open **Settings** and configure the following values:
 | `srv.refreshChangedFiles` | Refresh the changed files list |
 | `srv.openSettings` | Open SRV settings |
 
-## Typical Workflow
+## 🛠️ Typical Workflow
 
 ### Review a file
 
