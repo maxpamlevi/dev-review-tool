@@ -35,9 +35,54 @@ function findModifiedEditor(filePath: string): vscode.TextEditor | undefined {
   );
 }
 
+async function runGitCommand(
+  cwd: string,
+  args: string[],
+): Promise<{ stdout: string; error: any }> {
+  const { execFile } = require("child_process");
+
+  return new Promise((resolve) => {
+    execFile("git", args, { cwd }, (error: any, stdout: string) => {
+      resolve({ error, stdout: stdout || "" });
+    });
+  });
+}
+
+async function resolveGitRootFromPath(
+  candidatePath: string,
+): Promise<string | null> {
+  // `candidatePath` may be either a file or a directory.
+  // We need the directory to pass as cwd to git.
+  // Using path.dirname on a directory gives us the PARENT, which is wrong —
+  // so detect whether candidatePath is itself a directory first.
+  const fs = require("fs") as typeof import("fs");
+  let cwd: string;
+  try {
+    const stat = fs.statSync(candidatePath);
+    cwd = stat.isDirectory() ? candidatePath : path.dirname(candidatePath);
+  } catch {
+    cwd = path.dirname(candidatePath);
+  }
+
+  const result = await runGitCommand(cwd, ["rev-parse", "--show-toplevel"]);
+
+  if (result.error || !result.stdout.trim()) {
+    return null;
+  }
+
+  return path.normalize(result.stdout.trim());
+}
+
 type ChangedFileEntry =
   | { kind: "loading" }
-  | { kind: "file"; filePath: string };
+  | FileChangedEntry;
+
+type FileChangedEntry = {
+  kind: "file";
+  filePath: string;
+  label: string;
+  repoRoot: string;
+};
 
 // This method is called when your extension is activated
 export function activate(context: vscode.ExtensionContext) {
@@ -47,7 +92,7 @@ export function activate(context: vscode.ExtensionContext) {
     >();
     readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
-    private files: string[] = [];
+    private files: FileChangedEntry[] = [];
     private isLoading = false;
     private loadTask: Promise<void> | null = null;
     private hasLoadedOnce = false;
@@ -63,6 +108,45 @@ export function activate(context: vscode.ExtensionContext) {
 
     refresh(): void {
       void this.reload();
+    }
+
+    private parsePorcelainEntries(
+      repoRoot: string,
+      output: string,
+    ): FileChangedEntry[] {
+      if (!output) return [];
+
+      const entries = output.split("\0").filter((part) => part.length > 0);
+      const files: FileChangedEntry[] = [];
+
+      for (let i = 0; i < entries.length; i++) {
+        const record = entries[i];
+        if (record.length < 4) continue;
+
+        const status = record.slice(0, 2);
+        const relativePath = record.slice(3);
+
+        let selectedPath = relativePath;
+        if (status[0] === "R" || status[0] === "C") {
+          const renamedPath = entries[i + 1];
+          if (renamedPath) {
+            selectedPath = renamedPath;
+            i += 1;
+          }
+        }
+
+        const filePath = path.normalize(path.join(repoRoot, selectedPath));
+        const label = path.relative(repoRoot, filePath).replace(/\\/g, "/");
+
+        files.push({
+          kind: "file",
+          filePath,
+          label: label || path.basename(filePath),
+          repoRoot,
+        });
+      }
+
+      return files;
     }
 
     private async reload(): Promise<void> {
@@ -99,7 +183,7 @@ export function activate(context: vscode.ExtensionContext) {
       return this.loadTask;
     }
 
-    private async fetchChangedFiles(): Promise<string[]> {
+    private async fetchChangedFiles(): Promise<FileChangedEntry[]> {
       if (
         !vscode.workspace.workspaceFolders ||
         vscode.workspace.workspaceFolders.length === 0
@@ -108,43 +192,58 @@ export function activate(context: vscode.ExtensionContext) {
         return [];
       }
 
-      const root = vscode.workspace.workspaceFolders[0].uri.fsPath;
-      const exec = require("child_process").exec;
+      const gitExt = vscode.extensions.getExtension("vscode.git");
+      if (gitExt && !gitExt.isActive) {
+        await gitExt.activate();
+      }
 
-      const output: string = await new Promise((resolve) => {
-        exec(
-          "git status --porcelain",
-          { cwd: root },
-          (_err: any, stdout: string) => {
-            resolve(stdout || "");
-          },
-        );
-      });
+      const gitApi = gitExt?.exports?.getAPI?.(1);
+      const repoRoots = new Set<string>();
 
-      if (!output.trim()) return [];
+      for (const repo of gitApi?.repositories ?? []) {
+        const rootUri = repo.rootUri?.fsPath;
+        if (!rootUri) continue;
 
-      const lines = output.split("\n").filter((l: string) => l.trim() !== "");
+        const resolved = await resolveGitRootFromPath(rootUri);
+        if (resolved) repoRoots.add(resolved);
+      }
 
-      // Each line format example:
-      // " M src/app.ts"
-      // "D  src/remove.ts"
-      // "?? newfile.ts"
-      return lines.map((line: string) => line.substring(3).trim());
+      for (const folder of vscode.workspace.workspaceFolders) {
+        const resolved = await resolveGitRootFromPath(folder.uri.fsPath);
+        if (resolved) repoRoots.add(resolved);
+      }
+
+      if (repoRoots.size === 0) return [];
+
+      const allFiles = await Promise.all(
+        [...repoRoots].map(async (repoRoot) => {
+          const { stdout } = await runGitCommand(repoRoot, [
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+          ]);
+
+          return this.parsePorcelainEntries(repoRoot, stdout);
+        }),
+      );
+
+      const dedup = new Map<string, FileChangedEntry>();
+      for (const entry of allFiles.flat()) {
+        dedup.set(entry.filePath, entry);
+      }
+
+      return [...dedup.values()].sort((a, b) => a.label.localeCompare(b.label));
     }
 
     getChildren(): ChangedFileEntry[] {
-      const items: ChangedFileEntry[] = this.files.map((filePath) => ({
-        kind: "file",
-        filePath,
-      }));
-
       // Only show the loading placeholder before the first result arrives.
       // During later refreshes we keep the last list visible and clickable.
-      if (this.isLoading && items.length === 0) {
+      if (this.isLoading && this.files.length === 0) {
         return [{ kind: "loading" }];
       }
 
-      return items;
+      return this.files;
     }
 
     getTreeItem(element: ChangedFileEntry): vscode.TreeItem {
@@ -156,7 +255,9 @@ export function activate(context: vscode.ExtensionContext) {
         return item;
       }
 
-      const item = new vscode.TreeItem(element.filePath);
+      const item = new vscode.TreeItem(element.label);
+      item.tooltip = element.filePath;
+      item.description = path.basename(element.repoRoot);
       item.command = {
         command: "srv.openDiff",
         title: "Open Diff",
@@ -278,11 +379,10 @@ export function activate(context: vscode.ExtensionContext) {
               );
               const filePath = document.fileName;
 
-              const workspaceFolder =
-                vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+              const workspaceFolder = await resolveGitRootFromPath(filePath);
               if (!workspaceFolder) {
                 vscode.window.showErrorMessage(
-                  "Không tìm thấy thư mục workspace.",
+                  "Không tìm thấy Git repository cho file này.",
                 );
                 return;
               }
@@ -457,8 +557,11 @@ export function activate(context: vscode.ExtensionContext) {
             await gitExt.activate();
           }
 
-          const root = folders[0].uri.fsPath;
-          const workingFile = vscode.Uri.file(path.join(root, relativeFile));
+          const workingFile = vscode.Uri.file(
+            path.isAbsolute(relativeFile)
+              ? relativeFile
+              : path.join(folders[0].uri.fsPath, relativeFile),
+          );
           const fileKey = workingFile.fsPath;
 
           // Prevent duplicate clicks from opening/reviewing the same file twice.
