@@ -1,6 +1,6 @@
 {
-  "name": "srv",
-  "displayName": "SRV",
+  "name": "Dev-Review-Tool",
+  "displayName": "Dev Review Tool",
   "publisher": "Khang-Nd",
   "description": "AI-powered Git diff code review for VS Code",
   "icon": "media/logo_ai.png",
@@ -104,7 +104,7 @@
         {
           "id": "srvSidebar",
           "title": "AI Review",
-          "icon": "media/logo.svg"
+          "icon": "media/side-bar-2.svg"
         }
       ]
     },
@@ -112,7 +112,7 @@
       "srvSidebar": [
         {
           "id": "srvPanel",
-          "name": "AI Code Review",
+          "name": "File Changes",
           "icon": "media/logo.svg"
         },
         {
